@@ -42,4 +42,4 @@ tqdm>=4.66.5
 
 # Sentence transformer
 sentence-transformers
-torch>=2.5.0
+torch
