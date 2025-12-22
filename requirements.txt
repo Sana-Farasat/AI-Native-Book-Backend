@@ -3,6 +3,7 @@
 numpy==1.26.4
 torch==2.2.2+cpu
 langchain-qdrant>=0.1.7
+langchain-groq>=0.1.3
 
 # Core FastAPI & Server
 fastapi>=0.115.0
