@@ -54,8 +54,8 @@ class LocalBGEEmbeddings(Embeddings):
     def _get_model(self):
         if self._model is None:
             logger.info("Loading embedding model (lazy)...")
-            self._model = SentenceTransformer("BAAI/bge-large-en-v1.5")
-            #self._model = SentenceTransformer("BAAI/bge-base-en-v1.5")
+            #self._model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+            self._model = SentenceTransformer("BAAI/bge-base-en-v1.5")
         return self._model
 
     def embed_documents(self, texts):
