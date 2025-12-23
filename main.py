@@ -79,37 +79,38 @@ def initialize_services():
 
     logger.info("Initializing services...")
 
-    embeddings = LocalBGEEmbeddings()
+    try:
+        embeddings = LocalBGEEmbeddings()
 
-    qdrant = QdrantClient(
-        url=os.getenv("QDRANT_URL"),
-        api_key=os.getenv("QDRANT_API_KEY")
-    )
+        qdrant = QdrantClient(
+            url=os.getenv("QDRANT_URL"),
+            api_key=os.getenv("QDRANT_API_KEY")
+        )
 
-    vector_store = QdrantVectorStore(
-        client=qdrant,
-        collection_name=os.getenv("COLLECTION_NAME", "book_chunks"),
-        embedding=embeddings,
-        #force_recreate=True #-----------------------------------
-    )
+        vector_store = QdrantVectorStore(
+            client=qdrant,
+            collection_name=os.getenv("COLLECTION_NAME", "book_chunks"),
+            embedding=embeddings,
+            #force_recreate=True #-----------------------------------
+        )
 
-    retriever = vector_store.as_retriever(search_kwargs={"k": 6})
+        retriever = vector_store.as_retriever(search_kwargs={"k": 6})
 
-    llm = ChatGroq(
-        model=MODEL_NAME,
-        temperature=0.7,
-        groq_api_key=os.getenv("GROQ_API_KEY")
-    )
+        llm = ChatGroq(
+            model=MODEL_NAME,
+            temperature=0.7,
+            groq_api_key=os.getenv("GROQ_API_KEY")
+        )
 
-    def format_docs(docs):
-        out = []
-        for d in docs:
-            out.append(
-                f"From {d.metadata.get('chapter')} > {d.metadata.get('section')}:\n{d.page_content}"
-            )
-        return "\n\n".join(out)
+        def format_docs(docs):
+            out = []
+            for d in docs:
+                out.append(
+                    f"From {d.metadata.get('chapter')} > {d.metadata.get('section')}:\n{d.page_content}"
+                )
+            return "\n\n".join(out)
 
-    prompt = ChatPromptTemplate.from_template("""
+        prompt = ChatPromptTemplate.from_template("""
 You are an expert assistant for the Physical AI textbook.
 
 Context:
@@ -125,12 +126,19 @@ Rules:
 Answer:
 """)
 
-    rag_chain = (
-        {"context": retriever | format_docs, "question": RunnablePassthrough()}
-        | prompt
-        | llm
-        | StrOutputParser()
-    )
+        rag_chain = (
+            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            | prompt
+            | llm
+            | StrOutputParser()
+        )
+
+        logger.info("Services initialized successfully")
+    except Exception as e:
+        logger.error(f"Error initializing services: {e}")
+        # Don't re-raise the exception to allow the app to start even if Qdrant is temporarily unavailable
+        # The error will be handled when the chat endpoint is called
+        pass
 
 # ---------------- FASTAPI ----------------
 app = FastAPI()
@@ -144,7 +152,12 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    initialize_services()
+    # Initialize services but don't fail startup if Qdrant is temporarily unavailable
+    try:
+        initialize_services()
+    except Exception as e:
+        logger.error(f"Failed to initialize services on startup: {e}")
+        logger.info("Application started but services not initialized. They will be initialized on first request if needed.")
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
@@ -174,5 +187,12 @@ async def chat(req: ChatRequest):
         )
 
     except Exception as e:
-        logger.error(e)
+        logger.error(f"Chat endpoint error: {e}")
+        # Check if it's a Qdrant connection issue
+        error_str = str(e).lower()
+        if "qdrant" in error_str or "connection" in error_str or "refused" in error_str:
+            raise HTTPException(
+                status_code=503,
+                detail="Service temporarily unavailable. Please check that Qdrant is accessible."
+            )
         raise HTTPException(status_code=500, detail=str(e))
