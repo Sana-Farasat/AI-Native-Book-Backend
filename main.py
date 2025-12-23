@@ -1,3 +1,7 @@
+# import torch
+# torch.set_num_threads(1)
+#-------------------------
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -45,47 +49,67 @@ class ChatResponse(BaseModel):
 # ---------------- LOCAL EMBEDDINGS ----------------
 class LocalBGEEmbeddings(Embeddings):
     def __init__(self):
-        self.model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+        self._model = None
+
+    def _get_model(self):
+        if self._model is None:
+            logger.info("Loading embedding model (lazy)...")
+            self._model = SentenceTransformer("BAAI/bge-large-en-v1.5")
+        return self._model
 
     def embed_documents(self, texts):
-        return self.model.encode(texts, normalize_embeddings=True).tolist()
+        model = self._get_model()
+        return model.encode(texts, normalize_embeddings=True).tolist()
 
     def embed_query(self, text):
-        return self.model.encode(text, normalize_embeddings=True).tolist()
+        model = self._get_model()
+        return model.encode(text, normalize_embeddings=True).tolist()
 
-# ---------------- INIT ----------------
-logger.info("Initializing services...")
 
-embeddings = LocalBGEEmbeddings()
+# Initialize services variables
+embeddings = None
+qdrant = None
+vector_store = None
+retriever = None
+llm = None
+rag_chain = None
 
-qdrant = QdrantClient(
-    url=os.getenv("QDRANT_URL"),
-    api_key=os.getenv("QDRANT_API_KEY")
-)
+def initialize_services():
+    global embeddings, qdrant, vector_store, retriever, llm, rag_chain
 
-vector_store = QdrantVectorStore(
-    client=qdrant,
-    collection_name=os.getenv("COLLECTION_NAME", "book_chunks"),
-    embedding=embeddings
-)
+    logger.info("Initializing services...")
 
-retriever = vector_store.as_retriever(search_kwargs={"k": 6})
+    embeddings = LocalBGEEmbeddings()
 
-llm = ChatGroq(
-    model=MODEL_NAME,
-    temperature=0.7,
-    groq_api_key=os.getenv("GROQ_API_KEY")
-)
+    qdrant = QdrantClient(
+        url=os.getenv("QDRANT_URL"),
+        api_key=os.getenv("QDRANT_API_KEY")
+    )
 
-def format_docs(docs):
-    out = []
-    for d in docs:
-        out.append(
-            f"From {d.metadata.get('chapter')} > {d.metadata.get('section')}:\n{d.page_content}"
-        )
-    return "\n\n".join(out)
+    vector_store = QdrantVectorStore(
+        client=qdrant,
+        collection_name=os.getenv("COLLECTION_NAME", "book_chunks"),
+        embedding=embeddings,
+        #force_recreate=True #-----------------------------------
+    )
 
-prompt = ChatPromptTemplate.from_template("""
+    retriever = vector_store.as_retriever(search_kwargs={"k": 6})
+
+    llm = ChatGroq(
+        model=MODEL_NAME,
+        temperature=0.7,
+        groq_api_key=os.getenv("GROQ_API_KEY")
+    )
+
+    def format_docs(docs):
+        out = []
+        for d in docs:
+            out.append(
+                f"From {d.metadata.get('chapter')} > {d.metadata.get('section')}:\n{d.page_content}"
+            )
+        return "\n\n".join(out)
+
+    prompt = ChatPromptTemplate.from_template("""
 You are an expert assistant for the Physical AI textbook.
 
 Context:
@@ -101,12 +125,12 @@ Rules:
 Answer:
 """)
 
-rag_chain = (
-    {"context": retriever | format_docs, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+    rag_chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
+    )
 
 # ---------------- FASTAPI ----------------
 app = FastAPI()
@@ -118,10 +142,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    initialize_services()
+
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
     try:
         session_id = req.session_id or str(uuid.uuid4())
+
+        # Ensure services are initialized before processing request
+        if rag_chain is None:
+            initialize_services()
 
         answer = await rag_chain.ainvoke(req.message)
         docs = await retriever.ainvoke(req.message)
