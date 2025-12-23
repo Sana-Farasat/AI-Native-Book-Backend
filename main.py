@@ -92,7 +92,7 @@ def initialize_services():
             client=qdrant,
             collection_name=os.getenv("COLLECTION_NAME", "book_chunks"),
             embedding=embeddings,
-            #force_recreate=True #-----------------------------------
+            force_recreate=True #-----------------------------------
         )
 
         retriever = vector_store.as_retriever(search_kwargs={"k": 6})
